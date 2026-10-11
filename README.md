@@ -20,7 +20,7 @@ dragged or the Start menu, search, notifications or a jump list is open.
 
 ## Limitations
 
-- Windows 11's current taskbar only. Made for build 26300. The mod relies on
+- Windows 11's current taskbar only. Tested on build 26300. The mod relies on
   internal taskbar functions found through Windows debug symbols, which an
   update can change; if one is missing or looks unexpected, the mod logs it
   and does nothing.
