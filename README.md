@@ -10,6 +10,21 @@ The order follows as windows move, are minimised or restored, open or close.
 The mod waits until things have been still for a moment, and while a window is
 dragged or the Start menu, search, notifications or a jump list is open.
 
+## Install
+
+From Windhawk's mod catalogue, once it has been approved there. Until then:
+
+1. In Windhawk, choose **Create a new mod**.
+2. Replace the sample code with the contents of
+   [`taskbar-spatial-order.wh.cpp`](taskbar-spatial-order.wh.cpp).
+3. Choose **Compile Mod**, then **Exit editing mode**.
+
+On Windhawk 2.0 this is one command:
+`windhawk-cli mod install --file taskbar-spatial-order.wh.cpp`.
+
+A copy installed this way gets no update offers. Once the mod is in the
+catalogue, install it from there and remove this copy.
+
 ## Settings
 
 | Setting | Default | What it does |

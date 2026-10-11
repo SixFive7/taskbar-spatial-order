@@ -5,6 +5,7 @@
 // @version         1.0
 // @author          Jori Huisman
 // @github          https://github.com/SixFive7
+// @homepage        https://github.com/SixFive7/taskbar-spatial-order
 // @include         explorer.exe
 // @architecture    x86-64
 // @compilerOptions -ldwmapi
