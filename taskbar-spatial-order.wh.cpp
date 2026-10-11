@@ -33,6 +33,8 @@
 // - Cycle taskbar buttons with mouse wheel: the lookup of a taskbar's button
 //   groups.
 //   https://github.com/ramensoftware/windhawk-mods/blob/main/mods/taskbar-wheel-cycle.wh.cpp
+// - Taskbar Labels for Windows 11: running code on the taskbar's thread.
+//   https://github.com/ramensoftware/windhawk-mods/blob/main/mods/taskbar-labels.wh.cpp
 
 // ==WindhawkModReadme==
 /*
@@ -76,10 +78,12 @@ minimised is left alone. The settings can change both and exclude apps.
 #include <dwmapi.h>
 
 #include <algorithm>
+#include <atomic>
 #include <optional>
 #include <span>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 #include <vector>
 
 struct {
@@ -467,6 +471,10 @@ std::wstring WindowList(const std::vector<Window>& windows) {
     return list;
 }
 
+// Windows whose moves, minimising and restoring can change the order of a
+// group: those in groups of two or more. Rebuilt by every pass.
+std::unordered_set<HWND> g_trackedWindows;
+
 void SortGroup(const Group& group) {
     HDPA items = (HDPA)((void**)group.taskGroup)[g_itemsSlot];
     int count = items ? items->cpItems : 0;
@@ -484,6 +492,7 @@ void SortGroup(const Group& group) {
             return;
         }
 
+        g_trackedWindows.insert(window.hWnd);
         window.minimised = IsIconic(window.hWnd);
         window.position = WindowPosition(window.hWnd, window.minimised);
     }
@@ -528,9 +537,237 @@ void SortAllGroups() {
         return;
     }
 
+    g_trackedWindows.clear();
     for (const Group& group : groups) {
         SortGroup(group);
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Triggers
+//
+// Sorting happens on the taskbar's thread, which owns the lists: the WinEvent
+// hooks and the timer are set up there, so their callbacks run there too.
+
+// How long windows have to be still before the groups are sorted again.
+constexpr UINT kSettleMs = 400;
+
+std::atomic<DWORD> g_taskbarThreadId;
+std::atomic<HWND> g_taskbarWnd;
+std::atomic<bool> g_unloading;
+std::atomic<bool> g_sorting;
+UINT_PTR g_sortTimer;
+std::vector<HWINEVENTHOOK> g_winEventHooks;
+
+// Whether the user is in the middle of something the sort shouldn't cut into:
+// dragging or resizing a window, holding a mouse button down (which also
+// covers dragging a taskbar button or pressing a thumbnail), or a menu of the
+// taskbar.
+bool IsUserBusy() {
+    if (GetAsyncKeyState(VK_LBUTTON) < 0 || GetAsyncKeyState(VK_RBUTTON) < 0) {
+        return true;
+    }
+
+    GUITHREADINFO info{};
+    info.cbSize = sizeof(info);
+    if (GetGUIThreadInfo(0, &info) && (info.flags & GUI_INMOVESIZE)) {
+        return true;
+    }
+
+    info = {};
+    info.cbSize = sizeof(info);
+    return GetGUIThreadInfo(GetCurrentThreadId(), &info) &&
+           (info.hwndCapture || (info.flags & (GUI_INMENUMODE | GUI_INMOVESIZE |
+                                               GUI_POPUPMENUMODE)));
+}
+
+void CALLBACK SortTimerProc(HWND, UINT, UINT_PTR, DWORD) {
+    // While the user is busy the timer keeps running, so the sort is retried.
+    if (g_sorting || IsUserBusy()) {
+        return;
+    }
+
+    KillTimer(nullptr, g_sortTimer);
+    g_sortTimer = 0;
+
+    g_sorting = true;
+    SortAllGroups();
+    g_sorting = false;
+}
+
+// Sorts once things have been still for kSettleMs: every call restarts the
+// countdown, so a burst of events ends in one pass.
+void ScheduleSort() {
+    if (!g_unloading) {
+        g_sortTimer = SetTimer(nullptr, g_sortTimer, kSettleMs, SortTimerProc);
+    }
+}
+
+void CALLBACK WinEventProc(HWINEVENTHOOK,
+                           DWORD event,
+                           HWND hWnd,
+                           LONG idObject,
+                           LONG idChild,
+                           DWORD,
+                           DWORD) {
+    if (!hWnd || idObject != OBJID_WINDOW || idChild != CHILDID_SELF) {
+        return;
+    }
+
+    // A window that's uncloaked may belong to a group without buttons so far,
+    // for example after switching to another virtual desktop.
+    if (event == EVENT_OBJECT_UNCLOAKED || g_trackedWindows.contains(hWnd)) {
+        ScheduleSort();
+    }
+}
+
+void WINAPI InitOnTaskbarThread(PVOID taskbarWnd) {
+    if (g_taskbarThreadId || g_unloading) {
+        return;
+    }
+
+    g_taskbarThreadId = GetCurrentThreadId();
+    g_taskbarWnd = (HWND)taskbarWnd;
+
+    // Moves and resizes ending, minimising and restoring; window moves of any
+    // kind; and windows being uncloaked.
+    constexpr DWORD kEventRanges[][2] = {
+        {EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MINIMIZEEND},
+        {EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE},
+        {EVENT_OBJECT_UNCLOAKED, EVENT_OBJECT_UNCLOAKED},
+    };
+    for (auto [first, last] : kEventRanges) {
+        if (HWINEVENTHOOK hook =
+                SetWinEventHook(first, last, nullptr, WinEventProc, 0, 0,
+                                WINEVENT_OUTOFCONTEXT)) {
+            g_winEventHooks.push_back(hook);
+        } else {
+            Wh_Log(L"SetWinEventHook failed: %u", GetLastError());
+        }
+    }
+
+    ScheduleSort();
+}
+
+void WINAPI UninitOnTaskbarThread(PVOID) {
+    g_unloading = true;
+
+    for (HWINEVENTHOOK hook : g_winEventHooks) {
+        UnhookWinEvent(hook);
+    }
+    g_winEventHooks.clear();
+
+    if (g_sortTimer) {
+        KillTimer(nullptr, g_sortTimer);
+        g_sortTimer = 0;
+    }
+}
+
+HWND FindTaskbarWindow() {
+    HWND hWnd = nullptr;
+    while ((hWnd = FindWindowEx(nullptr, hWnd, L"Shell_TrayWnd", nullptr))) {
+        DWORD processId = 0;
+        GetWindowThreadProcessId(hWnd, &processId);
+        if (processId == GetCurrentProcessId()) {
+            return hWnd;
+        }
+    }
+
+    return nullptr;
+}
+
+// Adapted from m417z's Taskbar Labels for Windows 11.
+using RunFromWindowThreadProc_t = void(WINAPI*)(PVOID parameter);
+
+bool RunFromWindowThread(HWND hWnd,
+                         RunFromWindowThreadProc_t proc,
+                         PVOID procParam) {
+    static const UINT runFromWindowThreadRegisteredMsg =
+        RegisterWindowMessage(L"Windhawk_RunFromWindowThread_" WH_MOD_ID);
+
+    struct RUN_FROM_WINDOW_THREAD_PARAM {
+        RunFromWindowThreadProc_t proc;
+        PVOID procParam;
+    };
+
+    DWORD dwThreadId = GetWindowThreadProcessId(hWnd, nullptr);
+    if (dwThreadId == 0) {
+        return false;
+    }
+
+    if (dwThreadId == GetCurrentThreadId()) {
+        proc(procParam);
+        return true;
+    }
+
+    HHOOK hook = SetWindowsHookEx(
+        WH_CALLWNDPROC,
+        [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
+            if (nCode == HC_ACTION) {
+                const CWPSTRUCT* cwp = (const CWPSTRUCT*)lParam;
+                if (cwp->message == runFromWindowThreadRegisteredMsg) {
+                    RUN_FROM_WINDOW_THREAD_PARAM* param =
+                        (RUN_FROM_WINDOW_THREAD_PARAM*)cwp->lParam;
+                    param->proc(param->procParam);
+                }
+            }
+
+            return CallNextHookEx(nullptr, nCode, wParam, lParam);
+        },
+        nullptr, dwThreadId);
+    if (!hook) {
+        return false;
+    }
+
+    RUN_FROM_WINDOW_THREAD_PARAM param;
+    param.proc = proc;
+    param.procParam = procParam;
+    SendMessage(hWnd, runFromWindowThreadRegisteredMsg, 0, (LPARAM)&param);
+
+    UnhookWindowsHookEx(hook);
+
+    return true;
+}
+
+// Called by the hooks below when a window joins or leaves a group. Explorer
+// does that on the taskbar's thread, which is also how the mod finds that
+// thread when it's loaded while Explorer starts, before the taskbar exists.
+void OnGroupChanged() {
+    if (!g_taskbarThreadId) {
+        HWND hTaskbarWnd = FindTaskbarWindow();
+        if (!hTaskbarWnd || GetWindowThreadProcessId(hTaskbarWnd, nullptr) !=
+                                GetCurrentThreadId()) {
+            return;
+        }
+
+        InitOnTaskbarThread(hTaskbarWnd);
+    }
+
+    if (GetCurrentThreadId() == g_taskbarThreadId) {
+        ScheduleSort();
+    }
+}
+
+using CTaskGroup_AddTaskItem_t = HRESULT(WINAPI*)(void* pThis,
+                                                  void* taskItem,
+                                                  void* insertBefore);
+CTaskGroup_AddTaskItem_t CTaskGroup_AddTaskItem_Original;
+HRESULT WINAPI CTaskGroup_AddTaskItem_Hook(void* pThis,
+                                           void* taskItem,
+                                           void* insertBefore) {
+    HRESULT result =
+        CTaskGroup_AddTaskItem_Original(pThis, taskItem, insertBefore);
+    OnGroupChanged();
+    return result;
+}
+
+using CTaskGroup_RemoveTaskItem_t = HRESULT(WINAPI*)(void* pThis,
+                                                     void* taskItem);
+CTaskGroup_RemoveTaskItem_t CTaskGroup_RemoveTaskItem_Original;
+HRESULT WINAPI CTaskGroup_RemoveTaskItem_Hook(void* pThis, void* taskItem) {
+    HRESULT result = CTaskGroup_RemoveTaskItem_Original(pThis, taskItem);
+    OnGroupChanged();
+    return result;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -609,6 +846,16 @@ bool HookTaskbarSymbols() {
             &CTaskGroup_GetNumItems,
         },
         {
+            {LR"(public: virtual long __cdecl CTaskGroup::AddTaskItem(struct ITaskItem *,struct ITaskItem *))"},
+            &CTaskGroup_AddTaskItem_Original,
+            CTaskGroup_AddTaskItem_Hook,
+        },
+        {
+            {LR"(public: virtual long __cdecl CTaskGroup::RemoveTaskItem(struct ITaskItem *))"},
+            &CTaskGroup_RemoveTaskItem_Original,
+            CTaskGroup_RemoveTaskItem_Hook,
+        },
+        {
             {LR"(const CWindowTaskItem::`vftable'{for `ITaskItem'})"},
             &CWindowTaskItem_ITaskItem_vftable,
         },
@@ -649,6 +896,34 @@ BOOL Wh_ModInit() {
 
     LoadSettings();
     return HookTaskbarSymbols();
+}
+
+void Wh_ModAfterInit() {
+    Wh_Log(L">");
+
+    // If Explorer is still starting, the first group change initialises.
+    if (HWND hTaskbarWnd = FindTaskbarWindow()) {
+        RunFromWindowThread(hTaskbarWnd, InitOnTaskbarThread, hTaskbarWnd);
+    }
+}
+
+void Wh_ModUninit() {
+    Wh_Log(L">");
+
+    HWND hTaskbarWnd = g_taskbarWnd;
+    if (!hTaskbarWnd) {
+        hTaskbarWnd = FindTaskbarWindow();
+    }
+
+    if (hTaskbarWnd) {
+        RunFromWindowThread(hTaskbarWnd, UninitOnTaskbarThread, nullptr);
+    }
+
+    // If the taskbar pumped messages mid-sort, the call above ran inside that
+    // sort, which must end before the mod is unloaded.
+    while (g_sorting) {
+        Sleep(10);
+    }
 }
 
 BOOL Wh_ModSettingsChanged(BOOL* bReload) {
