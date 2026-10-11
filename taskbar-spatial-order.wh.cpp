@@ -7,6 +7,7 @@
 // @github          https://github.com/SixFive7
 // @include         explorer.exe
 // @architecture    x86-64
+// @compilerOptions -ldwmapi
 // @license         GPL-3.0
 // ==/WindhawkMod==
 
@@ -72,9 +73,13 @@ minimised is left alone. The settings can change both and exclude apps.
 
 #include <windhawk_utils.h>
 
+#include <dwmapi.h>
+
 #include <algorithm>
 #include <optional>
+#include <span>
 #include <string>
+#include <tuple>
 #include <vector>
 
 struct {
@@ -367,6 +372,165 @@ int FixButtonOrder(const Taskbar& taskbar, void* taskGroup, HDPA items) {
     }
 
     return moved;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Sorting
+
+struct Window {
+    void* item;
+    HWND hWnd;
+    bool minimised;
+    POINT position;
+};
+
+// The top-left corner of a window's visible frame or, if it's minimised or
+// parked off screen, of its restored rectangle: where it sits when not
+// minimised, maximised or snapped. That rectangle is in workspace coordinates,
+// off from screen coordinates only by a taskbar or app bar at the top or left.
+POINT WindowPosition(HWND hWnd, bool minimised) {
+    RECT rect{};
+    if (!minimised &&
+        (SUCCEEDED(DwmGetWindowAttribute(hWnd, DWMWA_EXTENDED_FRAME_BOUNDS,
+                                         &rect, sizeof(rect))) ||
+         GetWindowRect(hWnd, &rect)) &&
+        MonitorFromRect(&rect, MONITOR_DEFAULTTONULL)) {
+        return {rect.left, rect.top};
+    }
+
+    WINDOWPLACEMENT placement{};
+    placement.length = sizeof(placement);
+    if (GetWindowPlacement(hWnd, &placement)) {
+        return {placement.rcNormalPosition.left,
+                placement.rcNormalPosition.top};
+    }
+
+    return {rect.left, rect.top};
+}
+
+// Minimised windows last if so set, then the left edge, the top edge and the
+// window handle, which makes the order total, so it never flips between passes.
+auto SortKey(const Window& window) {
+    return std::tuple(g_settings.minimisedLast && window.minimised,
+                      window.position.x, window.position.y,
+                      (UINT_PTR)window.hWnd);
+}
+
+// The file name of the process that owns a window, such as mspaint.exe.
+std::wstring ProcessName(HWND hWnd) {
+    DWORD processId = 0;
+    GetWindowThreadProcessId(hWnd, &processId);
+    HANDLE process =
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!process) {
+        return {};
+    }
+
+    WCHAR path[MAX_PATH * 2];
+    DWORD size = ARRAYSIZE(path);
+    BOOL succeeded = QueryFullProcessImageName(process, 0, path, &size);
+    CloseHandle(process);
+    if (!succeeded) {
+        return {};
+    }
+
+    PCWSTR name = wcsrchr(path, L'\\');
+    return name ? name + 1 : path;
+}
+
+// Whether a window's process has one of the names. False if the process can't
+// be identified.
+bool IsProcessOneOf(HWND hWnd, std::span<const std::wstring> names) {
+    if (names.empty()) {
+        return false;
+    }
+
+    std::wstring name = ProcessName(hWnd);
+    return std::ranges::any_of(names, [&](auto& other) {
+        return _wcsicmp(name.c_str(), other.c_str()) == 0;
+    });
+}
+
+bool IsExcluded(HWND hWnd) {
+    return IsProcessOneOf(hWnd, g_settings.excludedApps);
+}
+
+std::wstring WindowList(const std::vector<Window>& windows) {
+    std::wstring list;
+    for (const Window& window : windows) {
+        WCHAR handle[20];
+        swprintf_s(handle, ARRAYSIZE(handle), L"%s%X",
+                   list.empty() ? L"" : L" ", (DWORD)(DWORD_PTR)window.hWnd);
+        list += handle;
+    }
+
+    return list;
+}
+
+void SortGroup(const Group& group) {
+    HDPA items = (HDPA)((void**)group.taskGroup)[g_itemsSlot];
+    int count = items ? items->cpItems : 0;
+    if (count < 2) {
+        return;
+    }
+
+    std::vector<Window> windows(count);
+    for (int i = 0; i < count; i++) {
+        Window& window = windows[i];
+        window.item = items->pArray[i];
+        window.hWnd = ItemWindow(window.item);
+        if (!window.hWnd || !IsWindow(window.hWnd)) {
+            Wh_Log(L"Skipping a group with an item that has no window");
+            return;
+        }
+
+        window.minimised = IsIconic(window.hWnd);
+        window.position = WindowPosition(window.hWnd, window.minimised);
+    }
+
+    // Every button must belong to an item of the group, or the item list
+    // isn't what it's taken for.
+    for (const Taskbar& taskbar : group.taskbars) {
+        if (!ButtonRanks(taskbar.buttonGroup, items)) {
+            return;
+        }
+    }
+
+    if ((g_settings.skipFullyMinimisedGroups &&
+         std::ranges::all_of(windows, &Window::minimised)) ||
+        std::ranges::any_of(windows, IsExcluded, &Window::hWnd)) {
+        return;
+    }
+
+    if (!std::ranges::is_sorted(windows, {}, SortKey)) {
+        std::vector<Window> sorted = windows;
+        std::ranges::sort(sorted, {}, SortKey);
+        Wh_Log(L"%s: %s -> %s", ProcessName(windows[0].hWnd).c_str(),
+               WindowList(windows).c_str(), WindowList(sorted).c_str());
+
+        for (int i = 0; i < count; i++) {
+            items->pArray[i] = sorted[i].item;
+        }
+    }
+
+    for (const Taskbar& taskbar : group.taskbars) {
+        if (int moved = FixButtonOrder(taskbar, group.taskGroup, items)) {
+            Wh_Log(L"%s: moved %d buttons on taskbar %p",
+                   ProcessName(windows[0].hWnd).c_str(), moved,
+                   taskbar.taskList);
+        }
+    }
+}
+
+void SortAllGroups() {
+    std::vector<Group> groups;
+    if (!FindGroups(groups)) {
+        return;
+    }
+
+    for (const Group& group : groups) {
+        SortGroup(group);
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
