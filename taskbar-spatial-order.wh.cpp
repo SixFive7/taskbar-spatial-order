@@ -46,8 +46,8 @@ opened. Hover over an app's taskbar button and its leftmost window is the
 leftmost thumbnail; uncombined buttons follow the same order.
 
 The order follows as windows move, are minimised or restored, open or close.
-The mod waits until things have been still for a moment and never sorts while
-a window is being dragged.
+The mod waits until things have been still for a moment, and while a window
+is dragged or the Start menu, search, notifications or a jump list is open.
 
 By default, minimised windows go last and a group whose windows are all
 minimised is left alone. The settings can change both and exclude apps.
@@ -585,8 +585,8 @@ std::vector<HWINEVENTHOOK> g_winEventHooks;
 
 // Whether the user is in the middle of something the sort shouldn't cut into:
 // dragging or resizing a window, holding a mouse button down (which also
-// covers dragging a taskbar button or pressing a thumbnail), or a menu of the
-// taskbar.
+// covers dragging a taskbar button or pressing a thumbnail), a menu of the
+// taskbar, or one of the shell's popups.
 bool IsUserBusy() {
     if (GetAsyncKeyState(VK_LBUTTON) < 0 || GetAsyncKeyState(VK_RBUTTON) < 0) {
         return true;
@@ -600,9 +600,19 @@ bool IsUserBusy() {
 
     info = {};
     info.cbSize = sizeof(info);
-    return GetGUIThreadInfo(GetCurrentThreadId(), &info) &&
-           (info.hwndCapture || (info.flags & (GUI_INMENUMODE | GUI_INMOVESIZE |
-                                               GUI_POPUPMENUMODE)));
+    if (GetGUIThreadInfo(GetCurrentThreadId(), &info) &&
+        (info.hwndCapture || (info.flags & (GUI_INMENUMODE | GUI_INMOVESIZE |
+                                            GUI_POPUPMENUMODE)))) {
+        return true;
+    }
+
+    // Jump lists, notifications and the calendar, the Start menu, and search
+    // are drawn by these processes, so the taskbar's thread is idle while
+    // they're open, and moving a button closes an open jump list.
+    static const std::wstring kShellHosts[] = {L"ShellExperienceHost.exe",
+                                               L"StartMenuExperienceHost.exe",
+                                               L"SearchHost.exe"};
+    return IsProcessOneOf(GetForegroundWindow(), kShellHosts);
 }
 
 void CALLBACK SortTimerProc(HWND, UINT, UINT_PTR, DWORD) {

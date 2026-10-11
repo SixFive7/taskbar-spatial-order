@@ -7,8 +7,8 @@ app's taskbar button and its leftmost window is the leftmost thumbnail;
 uncombined buttons follow the same order.
 
 The order follows as windows move, are minimised or restored, open or close.
-The mod waits until things have been still for a moment and never sorts while
-a window is being dragged.
+The mod waits until things have been still for a moment, and while a window is
+dragged or the Start menu, search, notifications or a jump list is open.
 
 ## Settings
 
