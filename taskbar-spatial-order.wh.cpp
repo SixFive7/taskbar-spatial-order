@@ -34,6 +34,10 @@
 // - Cycle taskbar buttons with mouse wheel: the lookup of a taskbar's button
 //   groups.
 //   https://github.com/ramensoftware/windhawk-mods/blob/main/mods/taskbar-wheel-cycle.wh.cpp
+//
+// Watching windows from a thread of the mod's own follows the approach of his
+// Taskbar auto-hide when maximized; no code is taken from it.
+//   https://github.com/ramensoftware/windhawk-mods/blob/main/mods/taskbar-auto-hide-when-maximized.wh.cpp
 
 // ==WindhawkModReadme==
 /*
