@@ -559,7 +559,11 @@ void SortGroup(const Group& group, std::unordered_set<HWND>& trackedWindows) {
     }
 }
 
+// Counts windows joining and leaving groups (see OnGroupChanged).
+std::atomic<UINT> g_groupChanges;
+
 void SortAllGroups() {
+    UINT groupChanges = g_groupChanges;
     std::vector<Group> groups;
     if (!FindGroups(groups)) {
         return;
@@ -568,6 +572,14 @@ void SortAllGroups() {
     std::unordered_set<HWND> trackedWindows;
     for (const Group& group : groups) {
         SortGroup(group, trackedWindows);
+
+        // A window joining or leaving a group, which Explorer could handle
+        // during a move, can free objects found above. The change also
+        // schedules another pass.
+        if (g_groupChanges != groupChanges) {
+            Wh_Log(L"Groups changed while sorting");
+            return;
+        }
     }
 
     std::lock_guard lock(g_trackedWindowsMutex);
@@ -801,6 +813,7 @@ DWORD WINAPI WorkerThread(PVOID) {
 
 // Called by the hooks below when a window joins or leaves a group.
 void OnGroupChanged() {
+    g_groupChanges++;
     PostThreadMessage(g_workerThreadId, kGroupChangedMsg, 0, 0);
 }
 
