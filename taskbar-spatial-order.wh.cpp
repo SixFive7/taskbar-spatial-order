@@ -55,7 +55,7 @@ minimised is left alone. The settings can change both and exclude apps.
 
 ## Limitations
 
-- Windows 11's current taskbar only. Tested on build 26300. The mod relies on
+- Windows 11 24H2 and later, tested on build 26300. The mod relies on
   internal taskbar functions found through Windows debug symbols, which an
   update can change; if one is missing or looks unexpected, the mod logs it
   and does nothing.
