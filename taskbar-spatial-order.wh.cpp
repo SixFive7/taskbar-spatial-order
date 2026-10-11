@@ -21,9 +21,14 @@
 // full licence.
 //
 // Parts of this mod are adapted from GPL-3.0 mods by Michael Maltsev (m417z):
-// - Taskbar Thumbnail Reorder: the lookup of each taskbar and of a group's
-//   item list.
+// - Taskbar Thumbnail Reorder: the move-and-refresh technique (reorder the
+//   group's item list, then take each moved item off the taskbar and put it
+//   back, so the button list and the thumbnail list follow), the lookup of
+//   each taskbar and of a group's item list, and, from his development
+//   version, repositioning several items in one move instead of one slot at a
+//   time.
 //   https://github.com/ramensoftware/windhawk-mods/blob/main/mods/taskbar-thumbnail-reorder.wh.cpp
+//   https://github.com/m417z/my-windhawk-mods/commit/935c372e3de33982b3c0dfb2c6871ef88158545e
 // - Cycle taskbar buttons with mouse wheel: the lookup of a taskbar's button
 //   groups.
 //   https://github.com/ramensoftware/windhawk-mods/blob/main/mods/taskbar-wheel-cycle.wh.cpp
@@ -288,6 +293,83 @@ std::optional<std::vector<int>> ButtonRanks(void* buttonGroup, HDPA items) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Moving buttons
+//
+// Adapted from m417z's Taskbar Thumbnail Reorder. Once the group's item list
+// is in the new order, a button that is out of place is taken off its taskbar
+// and put back. The taskbar adds it right after the closest item before it in
+// the item list that has a button there, and inserts its thumbnail at the
+// same index, so both end up in the order of the item list. m417z takes the
+// button off with TaskInclusionChanged while a hook makes the taskbar's filter
+// reject the item; on the current taskbar that path is a call to
+// TaskDestroyed, which is called directly here instead.
+
+using CTaskListWnd_TaskNotify_t = HRESULT(WINAPI*)(void* pThis,
+                                                   void* taskGroup,
+                                                   void* taskItem);
+CTaskListWnd_TaskNotify_t CTaskListWnd_TaskDestroyed;
+CTaskListWnd_TaskNotify_t CTaskListWnd_TaskInclusionChanged;
+
+// The ranks of the buttons to move, in increasing order: all but a longest
+// increasing subsequence, so that as few buttons as possible move.
+std::vector<int> RanksToMove(std::vector<int> ranks) {
+    int count = (int)ranks.size();
+    std::vector<int> length(count, 1);
+    std::vector<int> previous(count, -1);
+    int last = -1;
+    for (int i = 0; i < count; i++) {
+        for (int j = 0; j < i; j++) {
+            if (ranks[j] < ranks[i] && length[j] + 1 > length[i]) {
+                length[i] = length[j] + 1;
+                previous[i] = j;
+            }
+        }
+
+        if (last == -1 || length[i] > length[last]) {
+            last = i;
+        }
+    }
+
+    for (int i = last; i != -1; i = previous[i]) {
+        ranks[i] = -1;
+    }
+
+    std::erase(ranks, -1);
+    std::ranges::sort(ranks);
+    return ranks;
+}
+
+// Brings one taskbar's buttons of a group into the order of the group's item
+// list. Buttons are moved one at a time and in the order of the list, so each
+// lands next to a button that is already in place, and the group always keeps
+// at least one button: a group that loses all its buttons is rebuilt at the
+// end of the taskbar.
+int FixButtonOrder(const Taskbar& taskbar, void* taskGroup, HDPA items) {
+    std::optional<std::vector<int>> ranks =
+        ButtonRanks(taskbar.buttonGroup, items);
+    if (!ranks) {
+        return 0;
+    }
+
+    int moved = 0;
+    for (int rank : RanksToMove(*ranks)) {
+        // Explorer could change the lists while it handles the calls below.
+        if (CTaskBtnGroup_GetNumItems(taskbar.buttonGroup) < 2 ||
+            rank >= items->cpItems) {
+            Wh_Log(L"Lists changed while moving buttons");
+            break;
+        }
+
+        void* item = items->pArray[rank];
+        CTaskListWnd_TaskDestroyed(taskbar.taskList, taskGroup, item);
+        CTaskListWnd_TaskInclusionChanged(taskbar.taskList, taskGroup, item);
+        moved++;
+    }
+
+    return moved;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Mod
 
 void LoadSettings() {
@@ -325,6 +407,14 @@ bool HookTaskbarSymbols() {
         {
             {LR"(public: virtual int __cdecl CTaskListWnd::GetButtonGroupCount(void))"},
             &CTaskListWnd_GetButtonGroupCount,
+        },
+        {
+            {LR"(public: virtual long __cdecl CTaskListWnd::TaskDestroyed(struct ITaskGroup *,struct ITaskItem *))"},
+            &CTaskListWnd_TaskDestroyed,
+        },
+        {
+            {LR"(public: virtual long __cdecl CTaskListWnd::TaskInclusionChanged(struct ITaskGroup *,struct ITaskItem *))"},
+            &CTaskListWnd_TaskInclusionChanged,
         },
         {
             {LR"(const CTaskBtnGroup::`vftable'{for `ITaskBtnGroup'})"},
