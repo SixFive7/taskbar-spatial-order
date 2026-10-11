@@ -51,6 +51,30 @@ a window is being dragged.
 
 By default, minimised windows go last and a group whose windows are all
 minimised is left alone. The settings can change both and exclude apps.
+
+## Limitations
+
+- Windows 11's current taskbar only. Made for build 26300. The mod relies on
+  internal taskbar functions found through Windows debug symbols, which an
+  update can change; if one is missing or looks unexpected, the mod logs it
+  and does nothing.
+- A button that moves is taken off the taskbar and put back, which can show
+  as a brief animation. Only buttons that are out of place move, and they keep
+  their progress bar, overlay badge and thumbnail toolbar buttons.
+- The mod's order wins: a window moved to another place in its group, by hand
+  or by another mod, goes back at the next sort.
+
+## Credits
+
+The move-and-refresh technique and the code that finds the taskbar's lists
+are adapted from [Taskbar Thumbnail Reorder][reorder] by [m417z][m417z], with
+smaller parts from his [Cycle taskbar buttons with mouse wheel][wheel] and
+[Taskbar Labels for Windows 11][labels] mods.
+
+[reorder]: https://windhawk.net/mods/taskbar-thumbnail-reorder
+[m417z]: https://github.com/m417z
+[wheel]: https://windhawk.net/mods/taskbar-wheel-cycle
+[labels]: https://windhawk.net/mods/taskbar-labels
 */
 // ==/WindhawkModReadme==
 
