@@ -34,8 +34,6 @@
 // - Cycle taskbar buttons with mouse wheel: the lookup of a taskbar's button
 //   groups.
 //   https://github.com/ramensoftware/windhawk-mods/blob/main/mods/taskbar-wheel-cycle.wh.cpp
-// - Taskbar Labels for Windows 11: running code on the taskbar's thread.
-//   https://github.com/ramensoftware/windhawk-mods/blob/main/mods/taskbar-labels.wh.cpp
 
 // ==WindhawkModReadme==
 /*
@@ -69,13 +67,11 @@ minimised is left alone. The settings can change both and exclude apps.
 
 The move-and-refresh technique and the code that finds the taskbar's lists
 are adapted from [Taskbar Thumbnail Reorder][reorder] by [m417z][m417z], with
-smaller parts from his [Cycle taskbar buttons with mouse wheel][wheel] and
-[Taskbar Labels for Windows 11][labels] mods.
+a smaller part from his [Cycle taskbar buttons with mouse wheel][wheel] mod.
 
 [reorder]: https://windhawk.net/mods/taskbar-thumbnail-reorder
 [m417z]: https://github.com/m417z
 [wheel]: https://windhawk.net/mods/taskbar-wheel-cycle
-[labels]: https://windhawk.net/mods/taskbar-labels
 */
 // ==/WindhawkModReadme==
 
@@ -593,7 +589,7 @@ void SortAllGroups() {
 // sort is decided on a thread of the mod's own, the worker. It takes the
 // window events, nearly all of which are for other windows or for the mouse
 // pointer as it moves, waits until things are still and the user isn't busy,
-// and only then has the taskbar's thread sort.
+// and only then asks the taskbar's thread to sort.
 
 // How long windows have to be still before the groups are sorted again.
 constexpr UINT kSettleMs = 400;
@@ -603,6 +599,7 @@ constexpr UINT kGroupChangedMsg = WM_APP;
 
 HANDLE g_workerThread;
 std::atomic<DWORD> g_workerThreadId;
+std::atomic<bool> g_unloading;
 
 // The worker's own.
 UINT_PTR g_sortTimer;
@@ -705,66 +702,79 @@ HWND FindTaskbarWindow() {
     return nullptr;
 }
 
-// Adapted from m417z's Taskbar Labels for Windows 11.
-using RunFromWindowThreadProc_t = void(WINAPI*)(PVOID parameter);
+// A request from the worker for a sort on the taskbar's thread. It's pending
+// until that thread takes it, unless the worker calls it off first.
+enum { kPending = 1, kTaken, kSorted, kFoundUserBusy, kCalledOff };
+std::atomic<int> g_request;
+std::atomic<int> g_requestHookCalls;
+HANDLE g_requestDone;
 
-bool RunFromWindowThread(HWND hWnd,
-                         RunFromWindowThreadProc_t proc,
-                         PVOID procParam) {
-    static const UINT runFromWindowThreadRegisteredMsg =
-        RegisterWindowMessage(L"Windhawk_RunFromWindowThread_" WH_MOD_ID);
+// Watches the messages the taskbar's thread takes from its queue while a
+// request is pending. A thread takes posted messages only in its message
+// loops, where the taskbar's own timers fire too, never while it waits for a
+// call it has made, when it may be in the middle of its lists.
+LRESULT CALLBACK RequestHook(int code, WPARAM wParam, LPARAM lParam) {
+    g_requestHookCalls++;
+    const MSG* msg = (const MSG*)lParam;
+    int pending = kPending;
+    if (code == HC_ACTION && wParam == PM_REMOVE && msg->message == WM_NULL &&
+        msg->lParam == (LPARAM)&g_request &&
+        g_request.compare_exchange_strong(pending, kTaken)) {
+        // The taskbar's thread may have opened a menu or taken the mouse
+        // since the worker checked.
+        bool busy = IsUserBusy(GetCurrentThreadId());
+        if (!busy) {
+            SortAllGroups();
+        }
 
-    struct RUN_FROM_WINDOW_THREAD_PARAM {
-        RunFromWindowThreadProc_t proc;
-        PVOID procParam;
-    };
-
-    DWORD dwThreadId = GetWindowThreadProcessId(hWnd, nullptr);
-    if (dwThreadId == 0) {
-        return false;
+        g_request = busy ? kFoundUserBusy : kSorted;
+        SetEvent(g_requestDone);
     }
 
-    if (dwThreadId == GetCurrentThreadId()) {
-        proc(procParam);
-        return true;
-    }
-
-    HHOOK hook = SetWindowsHookEx(
-        WH_CALLWNDPROC,
-        [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
-            if (nCode == HC_ACTION) {
-                const CWPSTRUCT* cwp = (const CWPSTRUCT*)lParam;
-                if (cwp->message == runFromWindowThreadRegisteredMsg) {
-                    RUN_FROM_WINDOW_THREAD_PARAM* param =
-                        (RUN_FROM_WINDOW_THREAD_PARAM*)cwp->lParam;
-                    param->proc(param->procParam);
-                }
-            }
-
-            return CallNextHookEx(nullptr, nCode, wParam, lParam);
-        },
-        nullptr, dwThreadId);
-    if (!hook) {
-        return false;
-    }
-
-    RUN_FROM_WINDOW_THREAD_PARAM param;
-    param.proc = proc;
-    param.procParam = procParam;
-    SendMessage(hWnd, runFromWindowThreadRegisteredMsg, 0, (LPARAM)&param);
-
-    UnhookWindowsHookEx(hook);
-
-    return true;
+    LRESULT result = CallNextHookEx(nullptr, code, wParam, lParam);
+    g_requestHookCalls--;
+    return result;
 }
 
-// Runs on the taskbar's thread, which may have opened a menu or taken the
-// mouse since the worker checked.
-void WINAPI SortUnlessBusy(PVOID busy) {
-    *(bool*)busy = IsUserBusy(GetCurrentThreadId());
-    if (!*(bool*)busy) {
-        SortAllGroups();
+// Has the taskbar's thread sort, and returns whether it found the user busy
+// instead.
+bool SortOnTaskbarThread(HWND hTaskbarWnd) {
+    DWORD threadId = GetWindowThreadProcessId(hTaskbarWnd, nullptr);
+    HHOOK hook = threadId ? SetWindowsHookEx(WH_GETMESSAGE, RequestHook,
+                                             nullptr, threadId)
+                          : nullptr;
+    if (!hook) {
+        Wh_Log(L"Couldn't hook the taskbar's thread");
+        return false;
     }
+
+    // The request is a WM_NULL marked with the address of g_request, which
+    // the taskbar ignores should it get there after the hook is gone. It's
+    // called off if the taskbar goes away or the mod unloads first.
+    g_request = kPending;
+    bool posted = PostMessage(hTaskbarWnd, WM_NULL, 0, (LPARAM)&g_request);
+    for (;;) {
+        int pending = kPending;
+        if ((!posted || g_unloading || !IsWindow(hTaskbarWnd)) &&
+            g_request.compare_exchange_strong(pending, kCalledOff)) {
+            break;
+        }
+
+        if (WaitForSingleObject(g_requestDone, 50) != WAIT_TIMEOUT) {
+            break;
+        }
+    }
+
+    // Once the hook is removed and none of its calls is running, a message
+    // the taskbar's thread handles shows it has left the hook's code.
+    UnhookWindowsHookEx(hook);
+    while (g_requestHookCalls) {
+        Sleep(1);
+    }
+
+    SendMessageTimeout(hTaskbarWnd, WM_NULL, 0, 0,
+                       SMTO_BLOCK | SMTO_ABORTIFHUNG, 1000, nullptr);
+    return g_request == kFoundUserBusy;
 }
 
 // Sorts when the countdown ends, unless the user is busy: then the timer keeps
@@ -779,7 +789,7 @@ void OnSortTimer() {
         busy = IsUserBusy(GetWindowThreadProcessId(hTaskbarWnd, nullptr));
         if (!busy) {
             WatchWindows();
-            RunFromWindowThread(hTaskbarWnd, SortUnlessBusy, &busy);
+            busy = SortOnTaskbarThread(hTaskbarWnd);
         }
     }
 
@@ -790,6 +800,12 @@ void OnSortTimer() {
 }
 
 DWORD WINAPI WorkerThread(PVOID) {
+    g_requestDone = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (!g_requestDone) {
+        Wh_Log(L"CreateEvent failed: %u", GetLastError());
+        return 0;
+    }
+
     ScheduleSort();
 
     MSG msg;
@@ -808,6 +824,7 @@ DWORD WINAPI WorkerThread(PVOID) {
         UnhookWinEvent(hook);
     }
 
+    CloseHandle(g_requestDone);
     return 0;
 }
 
@@ -987,15 +1004,17 @@ void Wh_ModUninit() {
         return;
     }
 
-    // Posting fails until the worker has a message queue, which it may not
-    // have yet if it has only just started.
+    // A sort the worker has asked for and the taskbar's thread hasn't started
+    // is called off. Posting fails until the worker has a message queue, which
+    // it may not have yet if it has only just started.
+    g_unloading = true;
     DWORD threadId = g_workerThreadId.exchange(0);
     while (!PostThreadMessage(threadId, WM_QUIT, 0, 0) &&
            WaitForSingleObject(g_workerThread, 10) == WAIT_TIMEOUT) {
     }
 
-    // The taskbar's thread sorts only while the worker waits for it, so once
-    // the worker has ended, no sort is running.
+    // Each request ends with the taskbar's thread out of the mod's code, so
+    // once the worker has ended, nothing of the mod runs there.
     WaitForSingleObject(g_workerThread, INFINITE);
     CloseHandle(g_workerThread);
 }

@@ -60,16 +60,14 @@ thumbnail, by the sorted list.
 The move-and-refresh technique and the code that finds the taskbar's lists are
 adapted from [Taskbar Thumbnail Reorder][reorder] by
 [Michael Maltsev (m417z)][m417z], including repositioning several thumbnails in
-one move from his [development version][dev]. Smaller parts come from his
-[Cycle taskbar buttons with mouse wheel][wheel] and
-[Taskbar Labels for Windows 11][labels]. The header of
+one move from his [development version][dev]. A smaller part comes from his
+[Cycle taskbar buttons with mouse wheel][wheel]. The header of
 `taskbar-spatial-order.wh.cpp` lists what came from where.
 
 [reorder]: https://github.com/ramensoftware/windhawk-mods/blob/main/mods/taskbar-thumbnail-reorder.wh.cpp
 [m417z]: https://github.com/m417z
 [dev]: https://github.com/m417z/my-windhawk-mods/commit/935c372e3de33982b3c0dfb2c6871ef88158545e
 [wheel]: https://github.com/ramensoftware/windhawk-mods/blob/main/mods/taskbar-wheel-cycle.wh.cpp
-[labels]: https://github.com/ramensoftware/windhawk-mods/blob/main/mods/taskbar-labels.wh.cpp
 
 ## Licence
 
