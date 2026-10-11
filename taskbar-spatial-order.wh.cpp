@@ -65,10 +65,10 @@ minimised is left alone. The settings can change both and exclude apps.
 
 ## Limitations
 
-- Windows 11 24H2 and later, with its own taskbar, tested on build 26300. The
-  mod relies on internal taskbar functions found through Windows debug
-  symbols, which an update can change; if one is missing or looks unexpected,
-  the mod logs it and does nothing.
+- Windows 11 24H2 and later, with its own taskbar, tested on build 26300;
+  older versions are untested. The mod relies on internal taskbar functions
+  found through Windows debug symbols, which an update can change; if one is
+  missing or looks unexpected, the mod logs it and does nothing.
 - A button that moves is taken off the taskbar and put back, which can show
   as a brief animation. Only buttons that are out of place move, and they keep
   their progress bar, overlay badge and thumbnail toolbar buttons.
