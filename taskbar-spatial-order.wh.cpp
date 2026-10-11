@@ -48,6 +48,14 @@ left to right, then top to bottom, rather than roughly the order they were
 opened. Hover over an app's taskbar button and its leftmost window is the
 leftmost thumbnail; uncombined buttons follow the same order.
 
+Without the mod, the previews follow the order the windows were opened:
+
+![without](https://raw.githubusercontent.com/SixFive7/taskbar-spatial-order/main/images/without.gif)
+
+With it, they follow the windows on screen:
+
+![with](https://raw.githubusercontent.com/SixFive7/taskbar-spatial-order/main/images/with.gif)
+
 The order follows as windows move, are minimised or restored, open or close.
 The mod waits until things have been still for a moment, and while a window
 is dragged or the Start menu, search, notifications or a jump list is open.
