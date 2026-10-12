@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>TsoTestApp</AssemblyName>
+    <RootNamespace>TsoTestApp</RootNamespace>
+    <AssemblyTitle>TSO Live Test</AssemblyTitle>
+    <Product>TSO Live Test</Product>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Shared\*.cs" Link="Shared\%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
