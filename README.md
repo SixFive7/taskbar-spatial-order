@@ -59,6 +59,12 @@ same order. It then takes each button that is out of place off the taskbar
 and puts it straight back, which makes the taskbar place the button, and its
 thumbnail, by the sorted list.
 
+## Development
+
+[docs/design.md](docs/design.md) explains why the mod is built the way it is,
+and [test/](test/README.md) holds its tests: a harness that checks the mod's
+logic against a model of the taskbar, and a live test on a real one.
+
 ## Credits
 
 The move-and-refresh technique and the code that finds the taskbar's lists are
