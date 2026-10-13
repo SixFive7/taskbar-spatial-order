@@ -16,7 +16,11 @@ dragged or the Start menu, search, notifications or a jump list is open.
 
 ## Install
 
-From Windhawk's mod catalogue, once it has been approved there. Until then:
+From [Windhawk's mod catalogue](https://windhawk.net/mods/taskbar-spatial-order):
+in Windhawk, choose **Explore**, search for **Taskbar Spatial Order** and
+choose **Install**.
+
+To try a change from this repository before it reaches the catalogue:
 
 1. In Windhawk, choose **Create a new mod**.
 2. Replace the sample code with the contents of
@@ -26,8 +30,9 @@ From Windhawk's mod catalogue, once it has been approved there. Until then:
 On Windhawk 2.0 this is one command:
 `windhawk-cli mod install --file taskbar-spatial-order.wh.cpp`.
 
-A copy installed this way gets no update offers. Once the mod is in the
-catalogue, install it from there and remove this copy.
+A copy installed this way is a separate local mod next to the catalogue one,
+and gets no update offers. Disable the catalogue copy while you try it, and
+remove the local copy afterwards.
 
 ## Settings
 
